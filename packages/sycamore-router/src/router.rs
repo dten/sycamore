@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 
 use sycamore::prelude::*;
+use sycamore::reactive::scope::ReactiveScope;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Element, HtmlAnchorElement, KeyboardEvent};
@@ -22,7 +23,7 @@ pub fn static_router<R: Route>(
 }
 
 thread_local! {
-    static PATHNAME: RefCell<Option<Signal<String>>> = RefCell::new(None);
+    static PATHNAME: RefCell<Option<(ReactiveScope, ReadSignal<String>, WriteSignal<String>)>> = RefCell::new(None);
 }
 
 /// A router that uses the
@@ -33,16 +34,24 @@ pub fn browser_router<R: Route>(render: impl Fn(R) -> Template<G> + 'static) -> 
     PATHNAME.with(|pathname| {
         assert!(pathname.borrow().is_none());
         // Get initial url from window.location.
-        *pathname.borrow_mut() = Some(Signal::new(
-            web_sys::window().unwrap().location().pathname().unwrap(),
-        ));
+        let mut signal = None::<(ReadSignal<String>, WriteSignal<String>)>;
+        let scope = create_root(|| {
+            signal = Some(create_signal(
+                web_sys::window().unwrap().location().pathname().unwrap(),
+            ));
+        });
+        let signal = signal.unwrap();
+        *pathname.borrow_mut() = Some((scope, signal.0, signal.1));
     });
     let pathname = PATHNAME.with(|p| p.borrow().clone().unwrap());
 
     // Listen to popstate event.
-    let closure = Closure::wrap(Box::new(cloned!((pathname) => move || {
-        pathname.set(web_sys::window().unwrap().location().pathname().unwrap());
-    })) as Box<dyn FnMut()>);
+    let pathname1 = pathname.clone();
+    let closure = Closure::wrap(Box::new(move || {
+        pathname1
+            .2
+            .set(web_sys::window().unwrap().location().pathname().unwrap());
+    }) as Box<dyn FnMut()>);
     web_sys::window()
         .unwrap()
         .add_event_listener_with_callback("popstate", closure.as_ref().unchecked_ref())
@@ -51,6 +60,7 @@ pub fn browser_router<R: Route>(render: impl Fn(R) -> Template<G> + 'static) -> 
 
     let path = create_selector(move || {
         pathname
+            .1
             .get()
             .split('/')
             .filter(|s| !s.is_empty())
@@ -94,7 +104,7 @@ pub fn browser_router<R: Route>(render: impl Fn(R) -> Template<G> + 'static) -> 
                                 ev.prevent_default();
                                 PATHNAME.with(|pathname| {
                                     let pathname = pathname.borrow().clone().unwrap();
-                                    pathname.set(path.to_string());
+                                    pathname.2.set(path.to_string());
 
                                     // Update History API.
                                     let history = web_sys::window().unwrap().history().unwrap();
@@ -102,7 +112,7 @@ pub fn browser_router<R: Route>(render: impl Fn(R) -> Template<G> + 'static) -> 
                                         .push_state_with_url(
                                             &JsValue::UNDEFINED,
                                             "",
-                                            Some(pathname.get().as_str()),
+                                            Some(pathname.1.get().as_str()),
                                         )
                                         .unwrap();
                                 });
@@ -140,12 +150,12 @@ pub fn navigate(url: &str) {
         );
 
         let pathname = pathname.borrow().clone().unwrap();
-        pathname.set(url.to_string());
+        pathname.2.set(url.to_string());
 
         // Update History API.
         let history = web_sys::window().unwrap().history().unwrap();
         history
-            .push_state_with_url(&JsValue::UNDEFINED, "", Some(pathname.get().as_str()))
+            .push_state_with_url(&JsValue::UNDEFINED, "", Some(pathname.1.get().as_str()))
             .unwrap();
     });
 }
